@@ -63,12 +63,15 @@ class KlamptWidget(widgets.DOMWidget):
         return
     
     def set_world(self,world):
+        """Resets the world to a new WorldModel object. """
         self.world = world
         self.ghosts = set()
         s = ThreeJSGetScene(self.world)
         self.scene = json.loads(s)
 
     def update(self):
+        """Updates the view with changes to the world.  Unlike set_world(), this only pushes the geometry
+        transforms, so it's much faster"""
         if self.world:
             s = ThreeJSGetTransforms(self.world)
             self.transforms = json.loads(s)
@@ -88,15 +91,18 @@ class KlamptWidget(widgets.DOMWidget):
         self.rpc = {'type':'remove','name':name}
 
     def reset_camera(self):
+        """Resets the camera to the original view"""
         self.rpc = {'type':'reset_camera'}
 
     def get_camera(self):
+        """Returns a data structure representing the current camera view"""
         res = dict(self._camera).copy()
         if 'r' in res:
             del res['r']
         return res
 
     def set_camera(self,cam):
+        """Sets the current camera view"""
         self.camera = cam
         marked = dict(cam).copy()
         marked['r'] = 1
@@ -265,18 +271,18 @@ class KlamptWidget(widgets.DOMWidget):
         - image: a 2D array of single-channel values, (r,g,b) tuples, or (r,g,b,a) tuples.  Rows are listed
           top to bottom, rows from left to right.  Or, can also be a URL.
         - format:
-          - 'auto': autodetect the type from the image.  If the image contains values, the format is 'value'.
+          - 'auto': autodetect the type from the image. If the image contains values, the format is 'value'.
           - 'value': the values are mapped through either 'opacity', 'rainbow', or gradient
             color mapping.
-          - 'rgb': if the image contains values, they are interpreted as RGB values packed in 24 bit integers.
-            Otherwise, the first 3 channels of the tuple are used
-          - 'rgba': if the image contains values, they are interpreted as RGB values packed in 32 bit integers.
-            Otherwise, they are assumed (r,g,b,a) tuples
-        - crange: the range of the given values / channels. By default [0,1], but if you are using uint8 encoding
-          this should be set to [0,255].
+          - 'rgb': if the image contains values, they are interpreted as RGB values packed in 24 bit
+            integers. Otherwise, the first 3 channels of the tuple are used.
+          - 'rgba': if the image contains values, they are interpreted as RGB values packed in 32 bit
+            integers. Otherwise, they are assumed to be (r,g,b,a) tuples
+        - crange: the range of the given values / channels. By default [0,1], but if you are using uint8
+          encoding this should be set to [0,255].
         - colormap: how the color of the billboard should be set based on the image.  Valid values are:
-          - 'auto': if the image contains values, the gradient ((0,0,0),(1,1,1)) is used.  Otherwise 'replace'
-            is used.
+          - 'auto': if the image contains values, the gradient ((0,0,0),(1,1,1)) is used.  Otherwise
+            'replace' is used.
           - (color1,color2): interpolates between the two given (r,g,b) or (r,g,b,a) tuples.
           - 'opacity': sets the alpha channel only.
           - 'modulate': the value / rgb / rgba texture modulates the billboard color as set by set_color
