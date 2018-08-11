@@ -24,9 +24,8 @@ kviz.setWorld(world)
 
 """
 
-from klampt.robotsim import *
 from klampt import ThreeJSGetScene,ThreeJSGetTransforms
-from klampt.math import so3,se3
+from klampt.math import vectorops,so3,se3
 import json
 import time
 import math
