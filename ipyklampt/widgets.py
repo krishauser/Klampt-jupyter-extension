@@ -26,6 +26,8 @@ kviz.setWorld(world)
 
 from klampt import ThreeJSGetScene,ThreeJSGetTransforms
 from klampt.math import vectorops,so3,se3
+from klampt.model import types
+from klampt import RobotModel,RobotModelLink
 import json
 import time
 import math
@@ -35,7 +37,28 @@ from traitlets import Unicode, Dict, List, Int, validate, observe
 import traitlets
 import threading
 
+DEFAULT_POINT_RADIUS = 0.05
+DEFAULT_AXIS_LENGTH = 0.2
+DEFAULT_AXIS_WIDTH = 1
+
 class KlamptWidget(widgets.DOMWidget):
+    """Public members:
+    - world: the WorldModel isinstance
+    - width: the width of the view in pixels
+    - height: the height of the view in pixels
+
+    Private members
+    - scene: the scene JSON message
+    - transforms: the transforms JSON message
+    - rpc: the rpc JSON message
+    - _camera: the incoming camera JSON message from the frontend
+    - camera: the outgoing camera JSON message
+    - drawn: the incoming drawn message from the frontend
+    - events: incoming events from the frontend
+    - _ghosts: the set of ghosts
+    - _extras: a dict mapping extra item names to (type,data) pairs
+    - _rpc_calls: a list of pending RPC calls between begin_rpc() and end_rpc()
+    """
     _model_name = Unicode('KlamptModel').tag(sync=True)
     _view_name = Unicode('KlamptView').tag(sync=True)
     _model_module = Unicode('klampt-jupyter-widget').tag(sync=True)
@@ -55,7 +78,9 @@ class KlamptWidget(widgets.DOMWidget):
     def __init__(self,world=None,*args,**kwargs):
         widgets.DOMWidget.__init__(self,*args,**kwargs)
         self.world = world
-        self.ghosts = set()
+        self._extras = dict()
+        self._aggregating_rpc = 0
+        self._rpc_calls = []
         #does this need to be run after the above code?
         if world is not None:
             self.set_world(world)
@@ -64,9 +89,12 @@ class KlamptWidget(widgets.DOMWidget):
     def set_world(self,world):
         """Resets the world to a new WorldModel object. """
         self.world = world
-        self.ghosts = set()
+        self._extras = dict()
+        self._aggregating_rpc = 0
+        self._rpc_calls = []
         s = ThreeJSGetScene(self.world)
         self.scene = json.loads(s)
+        self.rpc = {}
 
     def update(self):
         """Updates the view with changes to the world.  Unlike set_world(), this only pushes the geometry
@@ -77,21 +105,55 @@ class KlamptWidget(widgets.DOMWidget):
 
     def clear(self):
         """Clears everything from the visualization, including the world"""
-        self.ghosts = set()
-        self.rpc = {'type':'reset_scene'}
+        self._extras = dict()
+        self._do_rpc({'type':'reset_scene'})
 
     def clear_extras(self):
         """Erases all ghosts, lines, points, text, etc from the visualization, but keeps the world."""
-        self.ghosts = set()
-        self.rpc = {'type':'clear_extras'}
+        self._extras = dict()
+        self._do_rpc({'type':'clear_extras'})
+
+    def add(self,name,item,type='auto'):
+        """Adds the item to the world, and returns its identifier"""
+        if type == 'auto':
+            try:
+                candidates = types.objectToTypes(item,self.world)
+            except Exception:
+                raise ValueError("Invalid item, not a known Klamp't type")
+            if isinstance(candidates,(list,tuple)):
+                type = candidates[0]
+            else:
+                type = candidates
+        if type == 'Config':
+            self.add_ghost(name)
+            self.set_ghost_config(name,item)
+        elif type == 'Configs':
+            names = []
+            for i,q in enumerate(item):
+                iname = name+'_'+str(i)
+                self.add_ghost(iname)
+                self.set_ghost_config(iname,q)
+                names.append(iname)
+            self._extras[name] = ('Configs',names)
+        elif type == 'Vector3':
+            self.add_sphere(name,item[0],item[1],item[2],DEFAULT_POINT_RADIUS)
+        elif type == 'RigidTransform':
+            self.add_xform(name,length=DEFAULT_AXIS_LENGTH,width=DEFAULT_AXIS_WIDTH)
+            self.set_transform(name,R=item[0],t=item[1])
+        else:
+            raise ValueError("KlamptWidget can't handle objects of type "+type+" yet")
 
     def remove(self,name):
         """Removes a certain named target, e.g. a ghost, line, text, etc."""
-        self.rpc = {'type':'remove','name':name}
+        self._do_rpc({'type':'remove','object':name})
+
+    def hide(self,name,hidden=True):
+        """Hides/shows named target, e.g. a ghost, line, text, etc."""
+        self._do_rpc({'type':'set_visible','object':name,'value':(not hidden)})
 
     def reset_camera(self):
         """Resets the camera to the original view"""
-        self.rpc = {'type':'reset_camera'}
+        self._do_rpc({'type':'reset_camera'})
 
     def get_camera(self):
         """Returns a data structure representing the current camera view"""
@@ -107,36 +169,25 @@ class KlamptWidget(widgets.DOMWidget):
         marked['r'] = 1
         self._camera = marked
 
-    @observe('_camera')
-    def _recv_camera(self,cam):
-        #trigger an update?
-        marked = cam['new'].copy()
-        marked['r'] = 1
-        self._camera = marked
-
-    @observe('events')
-    def _recv_events(self,events):
-        elist = events['new']
-        if len(elist) > 0:
-            for event in elist:
-                self.on_event(event)
-            self.events = []
-
-    @observe('drawn')
-    def _recv_drawn(self,drawn):
-        self.drawn = 0
-
-    def on_event(self,e):
-        print "KlamptWidget got event",e
-
     def set_visible(self,name,value=True):
         """Changes the visibility status of a certain named target"""
-        self.rpc = {'type':'set_visible','name':name,'value':value}
+        target_name = name
+        if name in self._extras:
+            type,data = self._extras[target]
+            if type == 'Config':
+                target_name = data
+            elif type == 'Configs':
+                self.begin_rpc(strict=False)
+                for subitem in data:
+                    self._do_rpc({'type':'set_visible','object':subitem,'value':value})
+                self.end_rpc(strict=False)
+        self._do_rpc({'type':'set_visible','object':target_name,'value':value})
 
     def set_color(self,target,r,g,b,a=1.0):
         """Sets the given RobotModel, RobotModelLink, named link, indexed link,
         or object name to some RGBA color (each channel in the range [0,1])."""
         recursive=False
+        target_name = None
         if isinstance(target, (int, long, float, complex)):
             robot = self.world.robot(0)
             target_as_link = robot.link(target)
@@ -151,25 +202,34 @@ class KlamptWidget(widgets.DOMWidget):
 
         elif isinstance(target, basestring):
             target_name=target
-            if target in self.ghosts:
-                recursive = True
+            if target in self._extras:
+                type,data = self._extras[target]
+                if type == 'Config':
+                    target_name = data
+                    recursive = True
+                elif type == 'Configs':
+                    #it's a group set everything under the group
+                    self.begin_rpc(strict=False)
+                    for subitem in data:
+                        self.set_color(subitem,r,g,b,a)
+                    self.end_rpc(strict=False)
+                    return
             else:
                 #see if it's the name of a robot
                 try:
                     self.world.robot(target).index
                     recursive = True
                 except Exception:
-                    pass
+                    raise ValueError("ERROR: set_color requires target of either robot, link, index, or string name of object!")
         else:
-            print "ERROR: set_color requires target of either robot, link, index, or string name of object!"
-            return;
+            raise ValueError("ERROR: set_color requires target of either robot, link, index, or string name of object!")
 
         rgba_color = [r,g,b,a]
 
         if recursive:
-            self.rpc = {'type':'set_color','object':target_name,'rgba':rgba_color,'recursive':True}
+            self._do_rpc({'type':'set_color','object':target_name,'rgba':rgba_color,'recursive':True})
         else:
-            self.rpc = {'type':'set_color','object':target_name,'rgba':rgba_color}
+            self._do_rpc({'type':'set_color','object':target_name,'rgba':rgba_color})
         #print "Setting link color!",('object',target_name,'rgba'),rgba_color
 
     def set_transform(self,name,R=so3.identity(),t=[0]*3,matrix=None):
@@ -177,22 +237,22 @@ class KlamptWidget(widgets.DOMWidget):
         array giving the 4x4 homogeneous transform matrix, in row-major format.  Otherwise,
         R and t are the 9-element klampt.so3 rotation and 3-element translation."""
         if matrix != None:
-            self.rpc = {'type':'set_transform','object':name,'matrix':matrix}
+            self._do_rpc({'type':'set_transform','object':name,'matrix':matrix})
         else:
-            self.rpc = {'type':'set_transform','object':name,'matrix':[R[0],R[3],R[6],t[0],R[1],R[4],R[7],t[1],R[2],R[5],R[8],t[2],0,0,0,1]}
+            self._do_rpc({'type':'set_transform','object':name,'matrix':[R[0],R[3],R[6],t[0],R[1],R[4],R[7],t[1],R[2],R[5],R[8],t[2],0,0,0,1]})
 
-    def add_ghost(self,prefixname="ghost",robot=0):
+    def add_ghost(self,name="ghost",robot=0):
         """Adds a ghost configuration of the robot that can be posed independently.
-        prefixname can be set to identify multiple ghosts. 
+        name can be set to identify multiple ghosts. 
 
-        Returns the identifier of the ghost for use in set_color.  The identifier is
-        just prefixname + robot.getName()."""
+        The identifier of the ghost in the three.js scene is prefixname + robot.getName(),
+        and all the links are identified by prefixname + link name."""
         if robot < 0 or robot >= self.world.numRobots():
             raise ValueError("Invalid robot specified")
         target_name=self.world.robot(robot).getName()   
-        self.rpc = {'type':'add_ghost','object':target_name,'prefix_name':prefixname}
-        self.ghosts.add(prefixname+target_name)
-        return prefixname+target_name
+        self._do_rpc({'type':'add_ghost','object':target_name,'prefix_name':name})
+        self._extras[name] = ('Config',name+target_name)
+        return name
 
     def get_robot_config(self,robot=0):
         """A convenience function.  Gets the robot's configuration in the visualization
@@ -203,7 +263,7 @@ class KlamptWidget(widgets.DOMWidget):
         q = robot.getConfig()
         return q
 
-    def set_ghost_config(self,q,prefixname="ghost",robot=0):
+    def set_ghost_config(self,q,name="ghost",robot=0):
         """Sets the configuration of the ghost to q.  If the ghost is named, place its name
         in prefixname."""
         if robot < 0 or robot >= self.world.numRobots():
@@ -216,6 +276,7 @@ class KlamptWidget(widgets.DOMWidget):
             raise ValueError("Config must be correct size: %d != %d"%(len(q),robot.numLinks()))
         robot.setConfig(q)
 
+        self.begin_rpc(strict=False)
         rpcs = []
         for i in range(robot.numLinks()):
             T = robot.link(i).getTransform()
@@ -228,37 +289,52 @@ class KlamptWidget(widgets.DOMWidget):
             mat = se3.homogeneous(T)
             #mat is now a 4x4 homogeneous matrix 
 
-            name = prefixname+robot.link(i).getName()
+            linkname = name+robot.link(i).getName()
             #send to the ghost link with name "name"...
-            rpcs.append({'type':'set_transform','object':name,'matrix':[mat[0][0],mat[0][1],mat[0][2],mat[0][3],mat[1][0],mat[1][1],mat[1][2],mat[1][3],mat[2][0],mat[2][1],mat[2][2],mat[2][3],mat[3][0],mat[3][1],mat[3][2],mat[3][3]]})
-        self.rpc = {'type':'multiple','calls':rpcs}
+            self._do_rpc({'type':'set_transform','object':linkname,'matrix':[mat[0][0],mat[0][1],mat[0][2],mat[0][3],mat[1][0],mat[1][1],mat[1][2],mat[1][3],mat[2][0],mat[2][1],mat[2][2],mat[2][3],mat[3][0],mat[3][1],mat[3][2],mat[3][3]]})
+        self.end_rpc(strict=False)
 
         robot.setConfig(q_original) #restore original config
 
     def add_text(self,name="HUD_Text1",x=0,y=0,text=""):
         """Adds a new piece of text displayed on the screen.  name is a unique identifier of
         the text, and x,y are the coordinates of upper left corner of the the text, in percent """
-        self.rpc = {'type':'add_text','name':name,'x':x,'y':y,'text':text}    
+        self._extras[name] = ('Text',(x,y,text))
+        self._do_rpc({'type':'add_text','name':name,'x':x,'y':y,'text':text})
 
     def add_sphere(self,name="Sphere1",x=0,y=0,z=0,r=1):
         """Adds a new sphere to the world with the given x,y,z position and radius r."""
-        self.rpc = {'type':'add_sphere','name':name,'x':x,'y':y,'z':z,'r':r}  
+        self._extras[name] = ('Sphere',(x,y,z,r))
+        self._do_rpc({'type':'add_sphere','name':name,'x':x,'y':y,'z':z,'r':r})
 
     def add_line(self,name="Line1",x1=0,y1=0,z1=0,x2=1,y2=1,z2=1):
         """Adds a new line segment to the world connecting point (x1,y1,z1) to (x2,y2,z2)"""
-        self.rpc = {'type':'add_line','name':name,'verts':[x1,y1,z1,x2,y2,z2]}    
+        verts = [x1,y1,z1,x2,y2,z2]
+        self._extras[name] = ('Line',verts)
+        self._do_rpc({'type':'add_line','name':name,'verts':verts})
+
+    def add_xform(self,name="Xform1",length=DEFAULT_AXIS_LENGTH,width=DEFAULT_AXIS_WIDTH):
+        """Adds a new transform widget to the world with the given line length and width"""
+        self._extras[name] = ('RigidTransform',(length,width))
+        self._do_rpc({'type':'add_xform','name':name,'length':length,'width':width})
 
     def add_polyline(self,name="Line1",pts=[]):
         """Adds a new polygonal line segment to the world connecting the given list of 3-tuples"""
-        self.rpc = {'type':'add_line','name':name,'verts':sum(pts,[])}
+        verts = sum(pts,[])
+        self._extras[name] = ('Line',verts)
+        self._do_rpc({'type':'add_line','name':name,'verts':verts})
 
     def add_triangle(self,name="Tri1",a=(0,0,0),b=(1,0,0),c=(0,1,0)):
         """Adds a new triangle with vertices a,b,c.  a,b, and c are 3-lists or 3-tuples."""
-        self.rpc = {'type':'add_trilist','name':name,'verts':a+b+c}   
+        verts = a+b+c
+        self._extras[name] = ('Trilist',verts)
+        self._do_rpc({'type':'add_trilist','name':name,'verts':verts})
 
     def add_quad(self,name="Quad1",a=(0,0,0),b=(1,0,0),c=(1,1,0),d=(0,1,0)):
         """Adds a new quad (in CCW order) with vertices a,b,c,d.  a,b,c and d are 3-lists or 3-tuples."""
-        self.rpc = {'type':'add_trilist','name':name,'verts':a+b+c+a+c+d} 
+        verts = a+b+c+a+c+d
+        self._extras[name] = ('Trilist',verts)
+        self._do_rpc({'type':'add_trilist','name':name,'verts':verts}) 
 
     def add_billboard(self,name="Billboard",image=[[]],format='auto',crange=[0,1],colormap='auto',filter='linear',size=(1,1)):
         """Adds a 2D billboard to the world.  The image is a 2D array of values, which is
@@ -344,9 +420,67 @@ class KlamptWidget(widgets.DOMWidget):
                     else:
                         raise ValueError("Invalid format "+format)
             image = base64.b64encode(''.join(bytes))
-            self.rpc = {'type':'add_billboard','name':name,'imagedata':image,'width':w,'height':h,'size':size,'filter':filter,'colormap':colormap}
+            self._do_rpc({'type':'add_billboard','name':name,'imagedata':image,'width':w,'height':h,'size':size,'filter':filter,'colormap':colormap})
         else:
-            self.rpc = {'type':'add_billboard','name':name,'image':image,'size':size,'filter':filter,'colormap':colormap}
+            self._do_rpc({'type':'add_billboard','name':name,'image':image,'size':size,'filter':filter,'colormap':colormap})
+        self._extras[name] = ('Billboard',image)
+
+    def begin_rpc(self,strict=True):
+        """Begins collecting a set of RPC calls to be sent at once, which is a bit faster than doing multiple
+        add_X or set_X calls. 
+
+        Usage:
+          widget.begin_rpc()
+          widget.add_X()
+          ...
+          widget.set_X()
+          widget.end_rpc()  #this sends all the messages at once
+        """
+        if self._aggregating_rpc == 0:
+            assert len(self._rpc_calls)==0
+        if self._aggregating_rpc != 0 and strict:
+            raise RuntimeError("Each begin_rpc() call must be ended with an end_rpc() call")
+        self._aggregating_rpc += 1
+        return
+
+    def _do_rpc(self,msg):
+        """Internally used to send or queue an RPC call"""
+        if self._aggregating_rpc:
+            self._rpc_calls.append(msg)
+        else:
+            self.rpc = msg
+
+    def end_rpc(self,strict=True):
+        """Ends collecting a set of RPC calls to be sent at once, and sends the accumulated message"""
+        if self._aggregating_rpc <= 0 or (self._aggregating_rpc==1 and strict):
+            raise ValueError("Each begin_rpc() call must be ended with an end_rpc() call")
+        self._aggregating_rpc -= 1
+        if self._aggregating_rpc == 0 and len(self._rpc_calls) > 0:
+            self.rpc = {'type':'multiple','calls':self._rpc_calls}
+            self._rpc_calls = []
+
+    @observe('_camera')
+    def _recv_camera(self,cam):
+        #trigger an update?
+        marked = cam['new'].copy()
+        marked['r'] = 1
+        self._camera = marked
+
+    @observe('events')
+    def _recv_events(self,events):
+        elist = events['new']
+        if len(elist) > 0:
+            for event in elist:
+                self.on_event(event)
+            self.events = []
+
+    @observe('drawn')
+    def _recv_drawn(self,drawn):
+        self.drawn = 0
+
+    def on_event(self,e):
+        print "KlamptWidget got event",e
+
 
 
 def EditConfig(robot,klampt_widget=None,ghost=None,link_selector='slider',link_subset=None,callback=None):
@@ -369,6 +503,7 @@ def EditConfig(robot,klampt_widget=None,ghost=None,link_selector='slider',link_s
     """
 
     qmin,qmax = robot.getJointLimits()
+    qedit = robot.getConfig()[:]
     if link_subset == None:
         link_subset = [i for i in xrange(robot.numLinks()) if qmin[i] != qmax[i]]
     else:
@@ -377,21 +512,42 @@ def EditConfig(robot,klampt_widget=None,ghost=None,link_selector='slider',link_s
                 raise ValueError("Invalid link specified in link_subset")
         link_subset = link_subset[:]
 
+    def _dochange_link(link):
+        if not math.isinf(qmin[link]):
+            joint_slider.min = qmin[link]
+            joint_slider.max = qmax[link]
+        else:
+            joint_slider.min = -2
+            joint_slider.max = 2
+        joint_slider.value = qedit[link]
+        if klampt_widget and ghost == None:
+            #show selected link in color
+            #restore old colors
+            klampt_widget.begin_rpc()
+            for i in link_subset:
+                klampt_widget.set_color(i,*robot.link(link).appearance().getColor())
+            #change new color
+            color = robot.link(link).appearance().getColor()
+            r,g,b,a = color
+            r = 1.0-(1.0-r)*0.5
+            g = 1.0-(1.0-g)*0.5
+            klampt_widget.set_color(link,r,g,b,a)
+            klampt_widget.end_rpc()
+
     def _dochange(link,value):
-        q = robot.getConfig()
         if ghost:
-            qold = q[:]
-        q[link] = value
-        robot.setConfig(q)
+            qold = robot.getConfig()
+        qedit[link] = value
+        robot.setConfig(qedit)
         if klampt_widget:
             if ghost:
-                klampt_widget.set_ghost_config(q,ghost,robot.index)
+                klampt_widget.set_ghost_config(qedit,ghost,robot.index)
             else:
                 klampt_widget.update()
         if ghost:
             robot.setConfig(qold)
         if callback:
-            callback(link,q)
+            callback(link,qedit)
 
     if link_selector == 'slider':
         link_slider=widgets.IntSlider(description='Link',min=0,max=len(link_subset)-1,value=0)
@@ -400,13 +556,7 @@ def EditConfig(robot,klampt_widget=None,ghost=None,link_selector='slider',link_s
         @interact(index=link_slider)
         def change_link(index):
             link = link_subset[index]
-            if not math.isinf(qmin[link]):
-                joint_slider.min = qmin[link]
-                joint_slider.max = qmax[link]
-            else:
-                joint_slider.min = -2
-                joint_slider.max = 2
-            joint_slider.value = robot.getConfig()[link]
+            _dochange_link(link)
         link_slider.observe(lambda change:change_link(change['new']),'value')
                 
         def change_joint_value(value):
@@ -420,13 +570,7 @@ def EditConfig(robot,klampt_widget=None,ghost=None,link_selector='slider',link_s
 
         def change_link(name):
             link = robot.link(name).index
-            if not math.isinf(qmin[link]):
-                joint_slider.min = qmin[link]
-                joint_slider.max = qmax[link]
-            else:
-                joint_slider.min = -2
-                joint_slider.max = 2
-            joint_slider.value = robot.getConfig()[link]
+            _dochange_link(link)
         link_dropdown.observe(lambda change:change_link(change['new']),'value')
                 
         def change_joint_value(value):
@@ -435,25 +579,26 @@ def EditConfig(robot,klampt_widget=None,ghost=None,link_selector='slider',link_s
         joint_slider.observe(lambda change:change_joint_value(change['new']),'value')
         return widgets.VBox([link_dropdown,joint_slider])
     elif link_selector == 'all':
-        q = robot.getConfig()
         sliders = []
         for link in link_subset:
-            sliders.append(widgets.FloatSlider(description=robot.link(link).getName(),min=qmin[link],max=qmax[link],value=q[link],step=0.001))
+            sliders.append(widgets.FloatSlider(description=robot.link(link).getName(),min=qmin[link],max=qmax[link],value=qedit[link],step=0.001))
             sliders[-1].observe(lambda value,link=link:_dochange(link,value['new']),'value')
         return widgets.VBox(sliders)
     else:
         raise ValueError("Invalid link_selector, must be slider, dropdown, or all")
 
-def EditPoint(value=None,min=None,max=None,labels=None,klampt_widget=None,point_name='edited_point',point_radius=0.05,callback=None):
+def EditPoint(value=None,min=None,max=None,labels=None,
+    klampt_widget=None,point_name='edited_point',point_radius=DEFAULT_POINT_RADIUS,
+    callback=None):
     """Creates a Jupyter widget for interactive editing of an xyz point
 
     Arguments:
     - value: the initial value of the point. If given, this must be a list and will hold the edited values.
     - min/max: the minimum and maximum of the point
-    - labels: if given, the 
+    - labels: if given, the labels of each channel
     - klampt_widget: the KlamptWidget visualization to update, or None if you don't want to visualize the point.
     - point_name: the name of the point in the visualization world to edit.
-    - point_radius: the radius of the point to edit.
+    - point_radius: the radius of the visualized point.
     - callback: a function callback(xyz) called when a DOF's value has changed.
 
     Returns: a VBox widget that can be displayed as you like
@@ -491,6 +636,73 @@ def EditPoint(value=None,min=None,max=None,labels=None,klampt_widget=None,point_
     for i in range(3):
         elems.append(widgets.FloatSlider(description=labels[i],value=value[i],min=min[i],max=max[i],step=0.001))
         elems[-1].observe(lambda v,i=i:_dochange(i,v['new']),'value')
+    return widgets.VBox(elems)
+
+def EditTransform(value=None,xmin=None,xmax=None,labels=None,
+    klampt_widget=None,xform_name='edited_xform',axis_length=DEFAULT_AXIS_LENGTH,axis_width=DEFAULT_AXIS_WIDTH,
+    callback=None):
+    """Creates a Jupyter widget for interactive editing of a rigid transform point
+
+    Arguments:
+    - value: the initial value of the transform (klampt.se3 element). If given as (R,t), the R and t members must be lists and will hold the edited values.
+    - xmin/xmax: the minimum and maximum of the translation
+    - labels: if given, the labels of roll,pitch,yaw and x,y,z
+    - klampt_widget: the KlamptWidget visualization to update, or None if you don't want to visualize the point.
+    - xform_name: the name of the xform in the visualization world to edit.
+    - axis_length,axis_width: the radius of the visualized point.
+    - callback: a function callback((R,t)) called when a DOF's value has changed.
+
+    Returns: a VBox widget that can be displayed as you like
+    """
+    if value is None:
+        value = se3.identity()
+    else:
+        if not isinstance(value,(tuple,list)):
+            raise ValueError("value must be a 2-element sequence")
+        if len(value) != 2:
+            raise ValueError("value must be a 2-element sequence")
+        if len(value[0]) != 9:
+            raise ValueError("value[0] must be a 9-element list")
+        if len(value[1]) != 3:
+            raise ValueError("value[1] must be a 3-element list")
+    if labels is None:
+        labels = ['roll','pitch','yaw','x','y','z']
+    if xmin is None:
+        xmin = [-5,-5,-5]
+    elif isinstance(xmin,(int,float)):
+        xmin = [xmin,xmin,xmin]
+    if xmax is None:
+        xmax = [5,5,5]
+    elif isinstance(xmax,(int,float)):
+        xmax = [xmax,xmax,xmax]
+    if len(xmin) != 3:
+        raise ValueError("xmin must be a 3-element list")
+    if len(xmax) != 3:
+        raise ValueError("xmax must be a 3-element list")
+    if klampt_widget:
+        klampt_widget.add_xform(name=xform_name,length=axis_length,width=axis_width)
+        klampt_widget.set_transform(name=xform_name,R=value[0],t=value[1])
+    rpy = list(so3.rpy(value[0]))
+    def _do_rotation_change(index,element):
+        rpy[index] = element
+        value[0][:] = so3.from_rpy(rpy)
+        if klampt_widget:
+            klampt_widget.set_transform(name=xform_name,R=value[0],t=value[1])
+        if callback:
+            callback(value)
+    def _do_translation_change(index,element):
+        value[1][index] = element
+        if klampt_widget:
+            klampt_widget.set_transform(name=xform_name,R=value[0],t=value[1])
+        if callback:
+            callback(value)
+    elems = []
+    for i in range(3):
+        elems.append(widgets.FloatSlider(description=labels[i],value=rpy[i],min=0,max=math.pi*2,step=0.001))
+        elems[-1].observe(lambda v,i=i:_do_rotation_change(i,v['new']),'value')
+    for i in range(3):
+        elems.append(widgets.FloatSlider(description=labels[3+i],value=value[1][i],min=xmin[i],max=xmax[i],step=0.001))
+        elems[-1].observe(lambda v,i=i:_do_translation_change(i,v['new']),'value')
     return widgets.VBox(elems)
 
 class Playback(widgets.VBox):

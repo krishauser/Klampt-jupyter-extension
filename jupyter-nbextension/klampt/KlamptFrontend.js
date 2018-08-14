@@ -9,6 +9,25 @@
 ///KlamptFrontend.rpc(request);          //performs an RPC call from a kviz request object
 ///KlamptFrontend.get_camera();          ///returns the current camera
 ///KlamptFrontend.set_camera(camdata);   ///sets the current camera
+///
+///RPC calls are designed to be idempotent.
+///
+///Current RPC calls:
+///(note: ? that updates can be called with or without the given item.  =value indicates that a default value is used if the argument is not specified.)
+///- clear_extras()
+///- remove(object)
+///- set_color(object,rgba)
+///- set_visible(object,value)
+///- set_transform(object,matrix)
+///- add_text(name,x?,y?,text?)
+///- add_ghost(prefix_name,object)
+///- add_sphere(name,x?,y?,z?,r?)
+///- add_line(name,verts,width=1)
+///- add_xform(name,length,width=1)
+///- add_trilist(name,verts)
+///- add_billboard(name,image,size,filter,colormap)
+///    OR
+///  add_billboard(name,imagedata,w,h,size,filter,colormap)
 
 define(["nbextensions/klampt/three.min"], function(THREE) {
 
@@ -650,6 +669,23 @@ function KlamptFrontend(dom_sceneArea) {
     return object;
   }
 
+  function removeObject(name)
+  {
+    var obj = getObject(name);
+    if(obj) {
+       if(name in _this.sceneCache) {
+          delete _this.sceneCache[name];
+       }
+       if ( !is_undefined_or_null(obj.geometry) ) obj.geometry.dispose();
+       if ( !is_undefined_or_null(obj.material) ) obj.material.dispose();
+       obj.visible = false;
+       obj.parent.remove(obj);
+    }
+    else {
+      console.log("KLAMPT.rpc: Item to be removed "+name+" not found");
+    }
+  }
+
   //dataJ has a Three.js scene object format
   this._set_scene = function (dataJ)
   {
@@ -691,8 +727,9 @@ function KlamptFrontend(dom_sceneArea) {
      });
      this.scene.add(new THREE.AmbientLight(0xffffff,0.2));
 
-    var axisHelper = new THREE.AxisHelper( 0.2 );
-    this.scene.add( axisHelper );
+    var AxesHelper = new THREE.AxesHelper( 0.2 );
+    AxesHelper.material.linewidth = 2.0;
+    this.scene.add( AxesHelper );
     this.extras = new THREE.Group();
     this.scene.add(this.extras);
   }
@@ -796,20 +833,8 @@ function KlamptFrontend(dom_sceneArea) {
      }
      else if(request.type == "remove") {
        //remove object from scene
-       //console.log("Removing item "+request.name);
-       var obj = getObject(request.name);
-       if(obj) {
-          if(request.name in this.sceneCache) {
-             delete this.sceneCache[request.name];
-          }
-          if ( !is_undefined_or_null(obj.geometry) ) obj.geometry.dispose();
-          if ( !is_undefined_or_null(obj.material) ) obj.material.dispose();
-          obj.visible = false;
-          obj.parent.remove(obj);
-       }
-       else {
-         console.log("KLAMPT.rpc: Item to be removed "+request.name+" not found");
-       }
+       //console.log("Removing item "+request.object);
+       removeObject(request.object);
      }
      else if(request.type == "set_color") 
      {
@@ -885,7 +910,7 @@ function KlamptFrontend(dom_sceneArea) {
      }
      else if(request.type == "set_visible") 
      {
-        var object_name=request.name;
+        var object_name=request.object;
         var visible=request.value;
                                                    
         //console.log("set_visible requested. object: " + object_name + " visible: " + visible); 
@@ -928,7 +953,7 @@ function KlamptFrontend(dom_sceneArea) {
      }
      else if(request.type == "set_transform")
      {                 
-        //console.log("got a set_transform RPC request for: " + request.object);
+        //console.log("KLAMPT.rpc: got a set_transform RPC request for: " + request.object);
         var object = getObject(request.object);
         if(object != null)
         {
@@ -936,7 +961,8 @@ function KlamptFrontend(dom_sceneArea) {
             object.matrixAutoUpdate=false;
             object.matrixWorldNeedsUpdate=true;
           
-            var m=request.matrix;     
+            var m=request.matrix;
+            //console.log(m);
             object.matrix.set(m[0],m[1],m[2],m[3],m[4],m[5],m[6],m[7],m[8],m[9],m[10],m[11],m[12],m[13],m[14],m[15]);
           } 
           else 
@@ -1019,6 +1045,9 @@ function KlamptFrontend(dom_sceneArea) {
           geometry.dynamic  = true;
              
           var material = new THREE.LineBasicMaterial( {color: 0xAA0000} );
+          if(!is_undefined_or_null(request.width)) {
+            material.linewidth = request.width;
+          }
           var line = new THREE.Line( geometry, material );
           line.userData.customSharedMaterialSetup=true;
           addObject(request.name,line);
@@ -1030,6 +1059,15 @@ function KlamptFrontend(dom_sceneArea) {
            }
            line.geometry.verticesNeedUpdate = true;
         }
+     }
+     else if(request.type == "add_xform")
+     {
+        var xform = getObject(request.name);
+        if(xform != null)
+          removeObject(name);
+        var axis = new THREE.AxesHelper(request.length);
+        if(!is_undefined_or_null(request.width)) axis.material.linewidth = request.width;
+        addObject(request.name,axis);
      } 
      else if(request.type == 'add_trilist')
      {
@@ -1186,8 +1224,8 @@ function KlamptFrontend(dom_sceneArea) {
     this.scene.add(new THREE.AmbientLight(0xffffff,0.2));
     this.scene.add(new THREE.DirectionalLight(0xffffff,0.9));
 
-    var axisHelper = new THREE.AxisHelper( 0.2 );
-    this.scene.add( axisHelper );
+    var AxesHelper = new THREE.AxesHelper( 0.2 );
+    this.scene.add( AxesHelper );
     this.extras = new THREE.Group();
     this.scene.add(this.extras);
   }
