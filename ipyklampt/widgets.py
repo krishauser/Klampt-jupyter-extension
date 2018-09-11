@@ -452,7 +452,7 @@ class KlamptWidget(widgets.DOMWidget):
 
     def end_rpc(self,strict=True):
         """Ends collecting a set of RPC calls to be sent at once, and sends the accumulated message"""
-        if self._aggregating_rpc <= 0 or (self._aggregating_rpc==1 and strict):
+        if self._aggregating_rpc <= 0 or (self._aggregating_rpc!=1 and strict):
             raise ValueError("Each begin_rpc() call must be ended with an end_rpc() call")
         self._aggregating_rpc -= 1
         if self._aggregating_rpc == 0 and len(self._rpc_calls) > 0:
