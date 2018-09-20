@@ -28,7 +28,7 @@ Try typing `help(ipyklampt.KlamptWidget)` for more help.  The ipyklampt module a
 
 The best way to learn how to use this extension is to study the example notebooks, which are found in the [examples](examples/) subdirectory.
 
-Auto-generated [documentation for the ipyklampt module can be found here](widgets.html).
+Auto-generated [documentation for the ipyklampt module can be found here](https://htmlpreview.github.io/?https://github.com/krishauser/Klampt-jupyter-extension/blob/master/widgets.html).
 
 
 ## Version history
