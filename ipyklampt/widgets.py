@@ -27,6 +27,7 @@ kviz.setWorld(world)
 from klampt import ThreeJSGetScene,ThreeJSGetTransforms
 from klampt.math import vectorops,so3,se3
 from klampt.model import types
+from klampt.model.trajectory import Trajectory,SE3Trajectory
 from klampt import RobotModel,RobotModelLink
 import json
 import time
@@ -112,7 +113,17 @@ class KlamptWidget(widgets.DOMWidget):
         self._do_rpc({'type':'clear_extras'})
 
     def add(self,name,item,type='auto'):
-        """Adds the item to the world, and returns its identifier"""
+        """Adds the item to the world, and returns a list of identifiers associated with it.
+        
+        Supports:
+        - Config, as a ghost (list, same size as robot)
+        - Configs, as a set of ghosts (list of lists, same size as robot)
+        - Vector3, drawn as a sphere (3-list)
+        - RigidTransform, drawn as an xform (pair of 9-list and 3-list)
+        - Configs, drawn as a polyline (list of 3-lists)
+        - Trajectory, drawn either as a polyline (Trajectory objects)
+           or a polyline + set of rigid transforms (SE3Trajectory objects)
+        """
         if type == 'auto':
             try:
                 candidates = types.objectToTypes(item,self.world)
@@ -123,21 +134,43 @@ class KlamptWidget(widgets.DOMWidget):
             else:
                 type = candidates
         if type == 'Config':
-            self.add_ghost(name)
+            res = self.add_ghost(name)
             self.set_ghost_config(name,item)
+            return [res]
         elif type == 'Configs':
-            names = []
-            for i,q in enumerate(item):
-                iname = name+'_'+str(i)
-                self.add_ghost(iname)
-                self.set_ghost_config(iname,q)
-                names.append(iname)
-            self._extras[name] = ('Configs',names)
+            if len(item[0]) == 3:
+                #it's a polyline
+                return [self.add_polyline(name,item)]
+            else:
+                #it's a set of configurations
+                names = []
+                for i,q in enumerate(item):
+                    iname = name+'_'+str(i)
+                    self.add_ghost(iname)
+                    self.set_ghost_config(q,iname)
+                    names.append(iname)
+                self._extras[name] = ('Configs',names)
+                return names
         elif type == 'Vector3':
-            self.add_sphere(name,item[0],item[1],item[2],DEFAULT_POINT_RADIUS)
+            res = self.add_sphere(name,item[0],item[1],item[2],DEFAULT_POINT_RADIUS)
+            return [res]
         elif type == 'RigidTransform':
-            self.add_xform(name,length=DEFAULT_AXIS_LENGTH,width=DEFAULT_AXIS_WIDTH)
+            res = self.add_xform(name,length=DEFAULT_AXIS_LENGTH,width=DEFAULT_AXIS_WIDTH)
             self.set_transform(name,R=item[0],t=item[1])
+            return [res]
+        elif type == 'Trajectory':
+            if isinstance(item,SE3Trajectory):
+                res = []
+                ttraj = []
+                for i in item.milestones:
+                    T = item.to_se3(item.milestones[i])
+                    res += self.add(name+"_milestone_"+str(i),T)
+                    ttraj.append(T[1])
+                res += self.add(name,ttraj)
+                self._extras[name] = ('Trajectory',res)
+                return res
+            else:
+                return self.add(name,item.milestones)
         else:
             raise ValueError("KlamptWidget can't handle objects of type "+type+" yet")
 
@@ -174,11 +207,12 @@ class KlamptWidget(widgets.DOMWidget):
             type,data = self._extras[target]
             if type == 'Config':
                 target_name = data
-            elif type == 'Configs':
+            elif type == 'Configs' or type == 'Trajectory':
                 self.begin_rpc(strict=False)
                 for subitem in data:
                     self._do_rpc({'type':'set_visible','object':subitem,'value':value})
                 self.end_rpc(strict=False)
+                return
         self._do_rpc({'type':'set_visible','object':target_name,'value':value})
 
     def set_color(self,target,r,g,b,a=1.0):
@@ -205,7 +239,7 @@ class KlamptWidget(widgets.DOMWidget):
                 if type == 'Config':
                     target_name = data
                     recursive = True
-                elif type == 'Configs':
+                elif type == 'Configs' or type == 'Trajectory':
                     #it's a group set everything under the group
                     self.begin_rpc(strict=False)
                     for subitem in data:
