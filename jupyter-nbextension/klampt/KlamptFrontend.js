@@ -1064,7 +1064,7 @@ function KlamptFrontend(dom_sceneArea) {
      {
         var xform = getObject(request.name);
         if(xform != null)
-          removeObject(name);
+          removeObject(request.name);
         var axis = new THREE.AxesHelper(request.length);
         if(!is_undefined_or_null(request.width)) axis.material.linewidth = request.width;
         addObject(request.name,axis);
