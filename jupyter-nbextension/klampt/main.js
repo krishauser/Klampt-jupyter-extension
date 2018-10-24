@@ -52,15 +52,6 @@ define(function(){
                     this.klampt.renderer.domElement.addEventListener( 'keydown', this.keydown, false );
                     this.el.appendChild(this.messageArea);
                     this.wait_for_dom();
-                    if(!isEmpty(this.model.get('scene'))) {
-                        this.scene_changed();
-                    }
-                    if(!isEmpty(this.model.get('transforms'))) {
-                        this.transforms_changed();
-                    }
-                    if(!isEmpty(this.model.get('camera'))) {
-                        this.camera_changed();
-                    }
                     this.model.on('change:scene', this.scene_changed, this);
                     this.model.on('change:transforms', this.transforms_changed, this);
                     this.model.on('change:rpc', this.rpc_changed, this);
@@ -72,6 +63,18 @@ define(function(){
                           _this.klampt.resize(_this.model.get('width'),_this.model.get('height'));
                           var cam = _this.klampt.get_camera();
                           _this.model.set('_camera',cam);
+                          if(!isEmpty(_this.model.get('scene'))) {
+                              _this.scene_changed();
+                          }
+                          if(!isEmpty(_this.model.get('transforms'))) {
+                              _this.transforms_changed();
+                          }
+                          if(!isEmpty(_this.model.get('camera'))) {
+                              _this.camera_changed();
+                          } 
+                          if(!isEmpty(_this.model.get('rpc'))) {
+                              _this.rpc_changed();
+                          }
                           _this.touch();
                         },
                         300);

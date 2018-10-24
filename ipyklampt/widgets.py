@@ -55,7 +55,6 @@ class KlamptWidget(widgets.DOMWidget):
     - camera: the outgoing camera JSON message
     - drawn: the incoming drawn message from the frontend
     - events: incoming events from the frontend
-    - _ghosts: the set of ghosts
     - _extras: a dict mapping extra item names to (type,data) pairs
     - _rpc_calls: a list of pending RPC calls between begin_rpc() and end_rpc()
     """
@@ -81,9 +80,9 @@ class KlamptWidget(widgets.DOMWidget):
         self._extras = dict()
         self._aggregating_rpc = 0
         self._rpc_calls = []
-        #does this need to be run after the above code?
         if world is not None:
             self.set_world(world)
+        self.rpc = {}
         return
     
     def set_world(self,world):
@@ -94,7 +93,6 @@ class KlamptWidget(widgets.DOMWidget):
         self._rpc_calls = []
         s = ThreeJSGetScene(self.world)
         self.scene = json.loads(s)
-        self.rpc = {}
 
     def update(self):
         """Updates the view with changes to the world.  Unlike set_world(), this only pushes the geometry
@@ -452,12 +450,13 @@ class KlamptWidget(widgets.DOMWidget):
 
     def end_rpc(self,strict=True):
         """Ends collecting a set of RPC calls to be sent at once, and sends the accumulated message"""
-        if self._aggregating_rpc <= 0 or (self._aggregating_rpc==1 and strict):
+        if self._aggregating_rpc <= 0 or (self._aggregating_rpc!=1 and strict):
             raise ValueError("Each begin_rpc() call must be ended with an end_rpc() call")
         self._aggregating_rpc -= 1
         if self._aggregating_rpc == 0 and len(self._rpc_calls) > 0:
             self.rpc = {'type':'multiple','calls':self._rpc_calls}
             self._rpc_calls = []
+
 
     @observe('_camera')
     def _recv_camera(self,cam):
@@ -477,6 +476,7 @@ class KlamptWidget(widgets.DOMWidget):
     @observe('drawn')
     def _recv_drawn(self,drawn):
         self.drawn = 0
+        print "Klampt widget drawn!"
 
     def on_event(self,e):
         print "KlamptWidget got event",e
