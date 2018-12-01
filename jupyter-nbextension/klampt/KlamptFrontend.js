@@ -1358,10 +1358,10 @@ function KlamptFrontend(dom_sceneArea) {
   this.width = 300;
   this.height = 150;
   this.scene = new THREE.Scene();
-  this.renderer = new THREE.WebGLRenderer();
-  //this.renderer = new THREE.WebGLRenderer({
-  //  preserveDrawingBuffer   : true   // required to support .toDataURL()
-  //});  
+  //this.renderer = new THREE.WebGLRenderer();
+  this.renderer = new THREE.WebGLRenderer({
+    preserveDrawingBuffer   : true   // required to support .toDataURL()
+  });  
   this.loader = new THREE.ObjectLoader();
   this.sceneArea = dom_sceneArea;
   //renderer.setClearColor(0x88888888);
