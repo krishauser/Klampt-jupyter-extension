@@ -28,9 +28,10 @@ in this directory.
 
 ## Usage
 
-Once installed, the Javascript frontend widget can be created by a `KlamptWidget`, which is defined in the `klampt.vis.ipython` module. 
-Try typing `help(klampt.vis.ipython.KlamptWidget)` for more help.  The klampt.vis.ipython module also contains useful helper widgets
-for editing robot configurations, points, transforms, and playback controls.
+The Jupyter frontend widget can be created by a `KlamptWidget`, which is defined in the `klampt.vis.ipython` module. The module also contains useful helper widgets for editing robot configurations and points.
+
+[API documentation can be found found here](http://motion.pratt.duke.edu/klampt/pyklampt_docs/klampt.vis.ipython.html).
+
 
 The best way to learn how to use this extension is to study the example notebooks, which are found in the [Klampt-examples](https://github.com/krishauser/Klampt-examples) project under the `Jupyter` directory.
 
