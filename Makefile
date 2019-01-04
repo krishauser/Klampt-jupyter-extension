@@ -1,14 +1,14 @@
-.PHONY: all wurlitzer python jupyter
+.PHONY: all install install-user install-wurlitzer
 
-all: wurlitzer python jupyter
+all: install
 	;
 
-wurlitzer:
+install-wurlitzer:
 	git clone https://github.com/minrk/wurlitzer.git
 	cd wurlitzer; python setup.py install
 
-python:
-	python setup.py install
-
-jupyter:
+install:
 	cd jupyter-nbextension; make install
+
+install-user:
+	cd jupyter-nbextension; make install-user
