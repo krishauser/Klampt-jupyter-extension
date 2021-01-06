@@ -684,7 +684,13 @@ function KlamptFrontend(dom_sceneArea) {
        obj.parent.remove(obj);
     }
     else {
-      console.log("KLAMPT.rpc: Item to be removed "+name+" not found");
+      obj = _this.sceneArea.querySelector("#_text_overlay_"+name);
+      if(obj) {
+        obj.parentNode.removeChild(obj);
+      }
+      else {
+        console.log("KLAMPT.rpc: Item to be removed "+name+" not found");
+      }
     }
   }
 
