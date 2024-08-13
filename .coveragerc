@@ -1,0 +1,2 @@
+[run]
+omit = klampt_jupyter/tests/*
